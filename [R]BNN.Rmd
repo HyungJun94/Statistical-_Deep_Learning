@@ -1,0 +1,493 @@
+---
+title: "BNN구현"
+author: "Hyung Jun Lim"
+output: html_document
+---
+
+## Bayesian Neural Network 
+
+
+### Basic settings and Structure
+```{r}
+## data
+# input variable: X ~ N(1,0)
+# sample size: 10 
+# target variable: Y = 3X^3 - X^2 +2X + e
+
+# prior for parameters
+# weight: w ~ N(0, (sigma_w)^2)  
+# bias: b ~ N(0, (sigma_b)^2)   
+# N(0,1) for now except for w,b for output layer
+
+## activation function: ReLU 
+
+## structure 
+
+# hidden layers: 2
+# units per layers: 8 
+```
+
+
+### data generation 
+```{r}
+X <- matrix(rnorm(10),nrow=10)
+y <-   X^3 - 2*X^2 + 2*X + 1
+y <- scale(y)
+plot(X,y)
+```
+
+
+### Activation ReLU function 
+```{r}
+# activation function (r has tanh as basic function)
+x <- seq(-2,2, len=50)
+
+relu <- function(x){
+  x[which(x<0)] <- 0
+  return(x)
+}
+
+plot(x, relu(x))
+
+```
+
+### Random Paramter Sampler 
+```{r}
+# setting
+d_input = ncol(X)
+n_layer = 2
+n_unit = 16
+d_output = 1
+sigma_w = 1
+sigma_b = 1
+os_w = os_b = 1/sqrt(n_unit)
+
+
+# initial weights
+sample_w <- function(d_input, n_layer, n_unit, d_output, sigma_w, sigma_b){
+  
+  input_w <- array( rnorm(d_input*n_unit, mean=0, sd=sigma_w), dim=c(d_input, n_unit) )
+  input_b <- array( rnorm(n_unit, mean=0, sd=sigma_b), dim=c(1,n_unit) )
+  
+  hidden_w <- array(rnorm(n_unit*n_unit*(n_layer-1), mean=0, sd=sigma_w),
+                    dim=c((n_layer-1),n_unit, n_unit))
+  hidden_b <- array(rnorm(n_unit*(n_layer-1), mean=0, sd=sigma_b),dim=c(1,n_layer-1))
+  
+  ow <- array(rnorm(n_unit*d_output, mean=0, sd=1/sqrt(n_unit)),dim=c(d_output,n_unit))
+  ob <- array(rnorm(d_output, mean=0, sd=1/sqrt(n_unit)),dim= c(1,d_output))
+  
+  obj <- list(input_w=input_w, input_b=input_b, hidden_w=hidden_w, hidden_b=hidden_b,
+              ow=ow, ob=ob)
+  return(obj)
+}
+
+
+weights <- sample_w(d_input, n_layer, n_unit, d_output, sigma_w, sigma_b)
+weights
+```
+
+
+### Computing the output of the network with [BNN]
+```{r}
+BNN <- function(X, weights, activ){
+  
+  # set result 
+  result <- c()
+  
+  # calculation 
+  input_to_hidden <-  X %*% weights$input_w + weights$input_b
+  input_to_hidden <- activ(input_to_hidden)
+  
+  hidden_signal <- input_to_hidden
+  
+  if(dim(weights$hidden_w)[1]==0){
+    hidden_signal <- hidden_signal
+  }else{
+    for(j in 1:dim(weights$hidden_w)[1]){
+      hidden_signal <- activ(hidden_signal %*% t(weights$hidden_w[j,,]) + weights$hidden_b[j,])
+    }
+  }
+  
+  output_signal <- hidden_signal %*% t(weights$ow) + weights$ob
+  result <- output_signal
+  
+  return(result)
+}
+
+BNN(X[1], weights,relu) # test
+
+```
+
+### Poseterior density
+```{r}
+# poseterior density 
+post_den <- function(y, X, weights){
+  likelihood <- 1
+  for(i in 1:nrow(X)){
+    likelihood <- likelihood * dnorm(y[i], mean=BNN(X[i],weights,relu),sd=0.1)
+  }
+  return(likelihood)
+}
+
+```
+
+
+
+
+### Rejection Sampling acceptance Probabilty
+```{r}
+# rejection prob function
+
+reject_pr <- function(y, X, weights){
+  
+  result <- 1/1.02
+  
+  for(i in 1:nrow(X)){
+    if(dnorm(y[i], mean=BNN(X[i],weights,relu),sd=0.1) == 0){
+      result <- 0
+    }else{
+      result <- result * dnorm(y[i], mean=BNN(X[i],weights,relu),sd=0.1)/ dnorm(y[i], mean=BNN(X[i],weights,relu), sd=0.102)  # conver the target density with Gaussian density with heavier tail 
+    }
+  }
+  return(result)
+}
+
+# test
+reject_pr(y,X,weights)
+```
+
+## 1. BNN by Rejection Sampling 
+```{r}
+# sample posterior with rejection sampling 
+
+sample_post <- function(X,y){
+  
+  post <- list()
+  count <- 0
+  iter <- 0
+  while(count < 10){
+    
+    weights <- sample_w(d_input, n_layer, n_unit, d_output, sigma_w, sigma_b)
+    u <- runif(1)
+    
+    prob <- reject_pr(y,X,weights)
+    if(u <= prob){
+      n <- count+1
+      post[[n]] <- weights
+      count <- count+1
+      print(count)
+    }else{
+      count <- count 
+    }
+    iter = iter + 1
+  }
+  print(iter)
+  return(post)
+}
+
+system.time(post <- sample_post(X,y))
+```
+
+### Plotting
+```{r}
+# plot posterior 
+draw_post <- function(post){
+  data1 <- seq(-5,5,len=50)
+  for(j in 1:length(post)){
+    output1 <- c()
+    for(i in 1:length(data1)){
+      output1[i] <- BNN(data1[i],post[[j]],relu)
+    }
+    lo <- loess(output1~data1)
+    lines(lo, type = 'l', lty=1)
+    
+  }
+}
+
+# average line 
+draw_post_aver <- function(post){
+  data1 <- seq(-5,5,len=100)
+  
+  output1 <-c()
+  for(i in 1:length(data1)){
+    output1[i] <- 0
+    for(j in 1:length(post)){
+      output1[i] <- output1[i] + BNN(data1[i],post[[j]],relu)
+    }
+    output1[i] <- output1[i]/length(post)
+  }
+  lo <- loess(output1~data1)
+  lines(lo, type = 'l', lty=2, col='blue', lwd=2)
+}
+
+plot(X,y, xlim=c(-5,5),ylim=c(-5,5))
+
+draw_post(post)
+
+plot(X,y)
+draw_post_aver(post)
+```
+
+## 2. BNN with Metropolis-Hastings Algorithm
+
+### Flatten and Unflattening the paramter list
+```{r}
+flatten <- function(list){
+  # dimension for recovery
+  dim <- list
+  for(k in 1:length(list)){
+    dim[[k]] <- dim(list[[k]])
+  }
+  # flattened saved in vec
+  vec <- c()
+  for(i in 1:length(list)){
+    vec <- c(vec, as.vector(list[[i]]))
+  }
+  # return list 
+  obj <- list(vec=vec, dim=dim)
+  return(obj)
+}
+
+
+un_flatten <- function(vec,dim,weights){
+  obj <- list()
+  for(i in 1:length(dim)){
+    obj[[i]] <- array(vec[1:prod(dim[[i]])], dim= dim[[i]])
+    vec <- vec[ (prod(dim[[i]])+1) : length(vec) ]
+  }
+  obj <- setNames(obj, names(weights))
+  return(obj)
+}
+```
+
+### vectorize the standard deviation of prior dists of paramters
+```{r}
+# get sd vector 
+
+get_sd <- function(weights){
+  sd <- rep(sigma_w, length(flatten(weights)$vec))
+  sd[(length(sd)- (n_unit+1)*d_output +1) :length(sd)] <- 1/sqrt(n_unit)
+  return(sd)
+}
+```
+
+### posterior density function 
+
+```{r}
+
+# post density
+post_density <- function(y, X, weights){
+  
+  # likelihood
+  likelihood <- 1
+  for(i in 1:nrow(X)){
+    likelihood <- likelihood * dnorm(y[i], mean=BNN(X[i],weights,relu),sd=0.1)
+  }
+  
+  # prior 
+  flat_w <- flatten(weights)$vec
+  N <- length(flat_w)
+  sd_vec <- get_sd(weights)
+  
+  prior <- 1
+  for(i in 1:N){
+    prior <- prior * dnorm(flat_w[i], mean=0, sd=sd_vec[i])
+  }
+  
+  post <- likelihood*prior 
+  
+  return(post)
+}
+
+post_density(y,X,weights)
+
+
+```
+
+
+### acceptance probability with MH alogrithm
+```{r}
+acceptance_pr2 <- function(y, X, w_old, w_new){
+  
+  result <- 1
+  
+  for(i in 1:nrow(X)){
+    if(dnorm(y[i], mean=BNN(X[i],w_new,relu),sd=0.1) == 0 | is.na(dnorm(y[i], mean=BNN(X[i],w_new,relu),sd=0.1)) ){
+      result <- 0
+    }else{
+      result <-  result* dnorm(y[i], mean=BNN(X[i],w_new,relu),sd=0.1)/ dnorm(y[i], mean=BNN(X[i],w_old,relu), sd=0.1) 
+    }
+  }
+  
+  flat_new <- flatten(w_new)$vec
+  flat_old <- flatten(w_old)$vec
+  N <- length(flat_new)
+
+  sd_vec <- get_sd(w_new)
+  
+  prior <- 1
+  for(i in 1:N){
+    prior <- prior * dnorm(flat_new[i], mean=0, sd=sd_vec[i])/dnorm(flat_old[i], mean=0, sd=sd_vec[i])
+  }
+  
+  result <- result*prior 
+  
+  result <- min(1, result)
+  if(is.na(result)){
+    result = 0
+  }
+  return(result)
+}
+
+
+# test
+w_new <- sample_w(d_input, n_layer, n_unit, d_output, sigma_w, sigma_b)
+acceptance_pr2(y,X,weights, w_new)
+```
+
+### Sampling BNN with MH algorithm
+```{r}
+
+MH_post2 <- function(X,y,weights){
+  
+  post <-list()
+  post[[1]] <- weights
+  
+  count <- 1
+  iter <- 0
+  w_old <- post[[1]]
+  
+  while(count < 15){
+    
+    w_new <- sample_w(d_input, n_layer, n_unit, d_output, sigma_w, sigma_b)
+    u <- runif(1)
+    
+    prob <- acceptance_pr2(y,X,w_old,w_new)
+    if(u <= prob){
+      n <- count+1
+      post[[n]] <- w_new
+      count <- count+1
+      print(count)
+      w_old <- w_new
+    }else{
+      count <- count 
+    }
+    iter = iter + 1
+  }
+  print(iter)
+  return(post)
+}
+
+system.time(post <- MH_post2(X,y,weights))
+
+```
+
+
+### Plotting 
+```{r}
+plot(X,y, xlim=c(-3.5,3.5),ylim=c(-5,5))
+draw_post(post[6:15])
+```
+
+
+## 3. BNN with hybrid MCMC
+
+### gradient function for differentiating the vector 
+```{r}
+# gradient 
+grad <- function(weights,func){ # input: vector 
+  obj <- c()
+  h <- 10^(-7)
+  f <- func(weights)
+  temp <- flatten(weights)
+  w <- temp$vec
+  dim <- temp$dim 
+  
+  for(i in 1:length(w)){
+    wh <- w
+    wh[i] <- wh[i] +h
+    wh <- un_flatten(wh, dim, weights)
+    df <- func(wh) - f
+    obj[i] <- df/h
+  }
+  return(obj)
+}
+```
+
+
+### Sampling BNN with hybrid MCMC
+```{r}
+library(mvtnorm)
+
+# hamiltonian MCMC 
+hybrid_post <- function(X,y,iter,step_size, sample_size){
+  
+  post <-list()
+  weights <- sample_w(d_input, n_layer, n_unit, d_output, sigma_w, sigma_b)
+  
+  while(post_density(y,X,weights)==0){
+    weights <- sample_w(d_input, n_layer, n_unit, d_output, sigma_w, sigma_b)
+  }
+  post[[1]] <- weights
+  
+  # Kinetic and Potential Energy 
+  V <- function(weights) -log(post_density(y,X,weights))
+  #K <- function(m_vec)  -log(dmvnorm(m_vec, rep(0,N), diag(N)))
+
+  # gradient functions
+  dVdx <- function(x) grad(x, V)
+  dKdp <- function(p) p
+  
+  # info 
+  count <- 1
+  iter <- 0
+  w_old <- post[[1]]
+  sd_vec <- get_sd(weights)
+  
+  while(count < sample_size){
+    
+    flat_w <- flatten(w_old)
+    vec <- flat_w$vec
+    dim <- flat_w$dim
+    N <- length(vec)
+    new_vec <- c()
+    
+    # momentum sampling 
+    m_vec <- rmvnorm(1, rep(0,N) , diag(N))
+    
+    #leapfrog 
+    for(j in 1:iter){
+      m_vec <- m_vec + step_size/2 * dVdx(un_flatten(vec,dim,w_old))
+      vec <- vec - step_size * m_vec 
+      m_vec <- m_vec + step_size/2 * dVdx(un_flatten(vec,dim,w_old))
+    }
+  
+    w_new <- un_flatten(vec, dim, weights)
+    u <- runif(1)
+    
+    prob <- acceptance_pr2(y,X,w_old,w_new)
+    if(u <= prob){
+      n <- count+1
+      post[[n]] <- w_new
+      count <- count+1
+      print(count)
+      w_old <- w_new
+    }else{
+      count <- count 
+    }
+    iter = iter + 1
+  }
+  print(iter)
+  return(post)
+}
+
+system.time(post <- hybrid_post(X,y,1,0.01,15))
+
+```
+
+### Plotting
+```{r}
+plot(X,y, xlim=c(-5,5), ylim=c(-5,5))
+draw_post(post[1:15])
+draw_post_aver(post[1:15])
+```

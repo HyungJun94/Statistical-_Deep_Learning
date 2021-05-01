@@ -1,2 +1,2 @@
-# Statistical-_Deep_Learning
+# Statistical_Deep_Learning
 Statistical Deep Learning Studies 
